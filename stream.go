@@ -1329,6 +1329,10 @@ func (ss *serverStream) Context() context.Context {
 	return ss.ctx
 }
 
+func (ss *serverStream) SetContext(ctx context.Context) {
+	ss.ctx = ctx
+}
+
 func (ss *serverStream) SetHeader(md metadata.MD) error {
 	if md.Len() == 0 {
 		return nil
