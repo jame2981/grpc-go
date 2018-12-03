@@ -1268,6 +1268,8 @@ type ServerStream interface {
 	SetTrailer(metadata.MD)
 	// Context returns the context for this stream.
 	Context() context.Context
+	// Set Context for this stream
+	SetContext(context.Context)
 	// SendMsg sends a message. On error, SendMsg aborts the stream and the
 	// error is returned directly.
 	//
