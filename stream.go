@@ -19,6 +19,7 @@
 package grpc
 
 import (
+	"context"
 	"errors"
 	"io"
 	"math"
@@ -26,12 +27,10 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/grpc/connectivity"
-
-	"golang.org/x/net/context"
 	"golang.org/x/net/trace"
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/encoding"
 	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/internal/binarylog"
@@ -166,6 +165,11 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 		}()
 	}
 	c := defaultCallInfo()
+	// Provide an opportunity for the first RPC to see the first service config
+	// provided by the resolver.
+	if err := cc.waitForResolvedAddrs(ctx); err != nil {
+		return nil, err
+	}
 	mc := cc.GetMethodConfig(method)
 	if mc.WaitForReady != nil {
 		c.failFast = !*mc.WaitForReady
@@ -231,7 +235,7 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 		trInfo.tr = trace.New("grpc.Sent."+methodFamily(method), method)
 		trInfo.firstLine.client = true
 		if deadline, ok := ctx.Deadline(); ok {
-			trInfo.firstLine.deadline = deadline.Sub(time.Now())
+			trInfo.firstLine.deadline = time.Until(deadline)
 		}
 		trInfo.tr.LazyLog(&trInfo.firstLine, false)
 		ctx = trace.NewContext(ctx, trInfo.tr)
@@ -293,7 +297,7 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 			Authority:    cs.cc.authority,
 		}
 		if deadline, ok := ctx.Deadline(); ok {
-			logEntry.Timeout = deadline.Sub(time.Now())
+			logEntry.Timeout = time.Until(deadline)
 			if logEntry.Timeout < 0 {
 				logEntry.Timeout = 0
 			}
@@ -458,10 +462,7 @@ func (cs *clientStream) shouldRetry(err error) error {
 	pushback := 0
 	hasPushback := false
 	if cs.attempt.s != nil {
-		if to, toErr := cs.attempt.s.TrailersOnly(); toErr != nil {
-			// Context error; stop now.
-			return toErr
-		} else if !to {
+		if to, toErr := cs.attempt.s.TrailersOnly(); toErr != nil || !to {
 			return err
 		}
 
@@ -1085,7 +1086,6 @@ type addrConnStream struct {
 	dc        Decompressor
 	decomp    encoding.Compressor
 	p         *parser
-	done      func(balancer.DoneInfo)
 	mu        sync.Mutex
 	finished  bool
 }

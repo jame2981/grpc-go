@@ -21,6 +21,7 @@ package transport
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -36,7 +37,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/context"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc/codes"
@@ -63,6 +63,13 @@ var (
 	expectedResponseLarge      = make([]byte, initialWindowSize*2)
 	expectedInvalidHeaderField = "invalid/content-type"
 )
+
+func init() {
+	expectedRequestLarge[0] = 'g'
+	expectedRequestLarge[len(expectedRequestLarge)-1] = 'r'
+	expectedResponseLarge[0] = 'p'
+	expectedResponseLarge[len(expectedResponseLarge)-1] = 'c'
+}
 
 type testStreamHandler struct {
 	t           *http2Server
@@ -109,7 +116,9 @@ func (h *testStreamHandler) handleStream(t *testing.T, s *Stream) {
 		return
 	}
 	if !bytes.Equal(p, req) {
-		t.Fatalf("handleStream got %v, want %v", p, req)
+		t.Errorf("handleStream got %v, want %v", p, req)
+		h.t.WriteStatus(s, status.New(codes.Internal, "panic"))
+		return
 	}
 	// send a response back to the client.
 	h.t.Write(s, nil, resp, &Options{})
@@ -125,12 +134,16 @@ func (h *testStreamHandler) handleStreamPingPong(t *testing.T, s *Stream) {
 				h.t.WriteStatus(s, status.New(codes.OK, ""))
 				return
 			}
-			t.Fatalf("Error on server while reading data header: %v", err)
+			t.Errorf("Error on server while reading data header: %v", err)
+			h.t.WriteStatus(s, status.New(codes.Internal, "panic"))
+			return
 		}
 		sz := binary.BigEndian.Uint32(header[1:])
 		msg := make([]byte, int(sz))
 		if _, err := s.Read(msg); err != nil {
-			t.Fatalf("Error on server while reading message: %v", err)
+			t.Errorf("Error on server while reading message: %v", err)
+			h.t.WriteStatus(s, status.New(codes.Internal, "panic"))
+			return
 		}
 		buf := make([]byte, sz+5)
 		buf[0] = byte(0)
@@ -143,7 +156,9 @@ func (h *testStreamHandler) handleStreamPingPong(t *testing.T, s *Stream) {
 func (h *testStreamHandler) handleStreamMisbehave(t *testing.T, s *Stream) {
 	conn, ok := s.st.(*http2Server)
 	if !ok {
-		t.Fatalf("Failed to convert %v to *http2Server", s.st)
+		t.Errorf("Failed to convert %v to *http2Server", s.st)
+		h.t.WriteStatus(s, status.New(codes.Internal, ""))
+		return
 	}
 	var sent int
 	p := make([]byte, http2MaxFrameLen)
@@ -2028,13 +2043,10 @@ func setUpHTTPStatusTest(t *testing.T, httpStatus int, wh writeHeaders) (*Stream
 		wh:         wh,
 	}
 	server.start(t, lis)
-	// TODO(deklerk): we can `defer cancel()` here after we drop Go 1.6 support. Until then,
-	// doing a `defer cancel()` could cause the dialer to become broken:
-	// https://github.com/golang/go/issues/15078, https://github.com/golang/go/issues/15035
 	connectCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(2*time.Second))
+	defer cancel()
 	client, err := newHTTP2Client(connectCtx, context.Background(), TargetInfo{Addr: lis.Addr().String()}, ConnectOptions{}, func() {}, func(GoAwayReason) {}, func() {})
 	if err != nil {
-		cancel() // Do not cancel in success path.
 		lis.Close()
 		t.Fatalf("Error creating client. Err: %v", err)
 	}
